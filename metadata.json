@@ -1,0 +1,5 @@
+{
+  "name": "AI 日程管家",
+  "description": "多模态 AI 日程助手，支持文本、语音和图片输入，自动生成结构化日程并导出 ICS。",
+  "requestFramePermissions": ["microphone"]
+}
