@@ -18,6 +18,17 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, Type } from "@google/genai";
 
 // --- Types ---
+interface AIStudio {
+  hasSelectedApiKey: () => Promise<boolean>;
+  openSelectKey: () => Promise<void>;
+}
+
+declare global {
+  interface Window {
+    aistudio?: AIStudio;
+  }
+}
+
 interface ScheduleItem {
   id: string;
   title: string;
@@ -71,8 +82,14 @@ export default function App() {
   const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
-  const [showSettings, setShowSettings] = useState(false);
+  const [apiKey, setApiKey] = useState(() => {
+    const saved = localStorage.getItem('gemini_api_key');
+    if (saved && saved !== 'undefined' && saved !== 'null') return saved;
+    return '';
+  });
+  const [showSettings, setShowSettings] = useState(!apiKey);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [isTestingKey, setIsTestingKey] = useState(false);
 
   const recognitionRef = useRef<any>(null);
 
@@ -152,8 +169,11 @@ export default function App() {
 
   // --- AI Processing ---
   const processSchedule = async () => {
-    if (!apiKey) {
-      setError('请先在上方输入 Gemini API Key。');
+    // Use UI key if provided, otherwise fallback to platform provided key (process.env.API_KEY or GEMINI_API_KEY)
+    const effectiveApiKey = apiKey.trim() || (process.env as any).API_KEY || (process.env as any).GEMINI_API_KEY || '';
+
+    if (!effectiveApiKey) {
+      setError('请先在设置中输入 Gemini API Key 或通过“官方密钥”连接。');
       setShowSettings(true);
       return;
     }
@@ -173,7 +193,7 @@ export default function App() {
     const currentDay = days[now.getDay()];
 
     try {
-      const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
+      const ai = new GoogleGenAI({ apiKey: effectiveApiKey });
       const model = "gemini-3-flash-preview";
 
       const systemInstruction = `
@@ -297,8 +317,29 @@ export default function App() {
       setInputText('');
       setSelectedImage(null);
     } catch (err: any) {
-      console.error(err);
-      setError('处理失败：' + (err.message || '未知错误'));
+      console.error('AI Processing Error:', err);
+      let errorMessage = err.message || '未知错误';
+      
+      // Try to parse JSON error from API
+      try {
+        if (errorMessage.includes('{')) {
+          const jsonStart = errorMessage.indexOf('{');
+          const jsonStr = errorMessage.substring(jsonStart);
+          const parsedError = JSON.parse(jsonStr);
+          if (parsedError.error?.message) {
+            errorMessage = parsedError.error.message;
+          }
+        }
+      } catch (e) {
+        // Fallback to original message
+      }
+
+      if (errorMessage.includes('API key not valid')) {
+        errorMessage = 'API Key 无效，请检查输入是否正确。';
+        setShowSettings(true);
+      }
+      
+      setError('处理失败：' + errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -325,6 +366,48 @@ export default function App() {
   const handleApiKeyChange = (val: string) => {
     setApiKey(val);
     localStorage.setItem('gemini_api_key', val);
+  };
+
+  const testApiKey = async () => {
+    const effectiveApiKey = apiKey.trim() || (process.env as any).API_KEY || (process.env as any).GEMINI_API_KEY || '';
+    if (!effectiveApiKey) {
+      setError('请先在设置中输入 API Key 或通过“官方密钥”连接。');
+      return;
+    }
+    setIsTestingKey(true);
+    setError(null);
+    try {
+      const ai = new GoogleGenAI({ apiKey: effectiveApiKey });
+      const model = "gemini-3-flash-preview";
+      await ai.models.generateContent({
+        model,
+        contents: "test",
+        config: { maxOutputTokens: 1 }
+      });
+      setSuccess('API Key 验证成功！');
+    } catch (err: any) {
+      console.error(err);
+      let msg = err.message || '验证失败';
+      if (msg.includes('API key not valid')) msg = 'API Key 无效';
+      setError('验证失败：' + msg);
+    } finally {
+      setIsTestingKey(false);
+    }
+  };
+
+  const useOfficialKey = async () => {
+    if (window.aistudio) {
+      try {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        if (!hasKey) {
+          await window.aistudio.openSelectKey();
+        }
+        setSuccess('已连接官方密钥，您可以开始使用了。');
+        setShowSettings(false);
+      } catch (e) {
+        setError('无法连接官方密钥，请尝试手动输入。');
+      }
+    }
   };
 
   return (
@@ -370,23 +453,64 @@ export default function App() {
                 </div>
                 <div className="relative">
                   <input 
-                    type="password"
+                    type={showApiKey ? "text" : "password"}
                     value={apiKey}
                     onChange={(e) => handleApiKeyChange(e.target.value)}
                     placeholder="输入您的 Gemini API Key..."
-                    className="w-full bg-gray-50 border-none focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-3 pr-10"
+                    className="w-full bg-gray-50 border-none focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-3 pr-20"
                   />
-                  {apiKey && (
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
                     <button 
-                      onClick={() => handleApiKeyChange('')}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="p-1 text-gray-400 hover:text-gray-600"
+                      title={showApiKey ? "隐藏" : "显示"}
                     >
-                      <X className="w-4 h-4" />
+                      {showApiKey ? <X className="w-4 h-4" /> : <Settings className="w-4 h-4" />}
+                    </button>
+                    {apiKey && (
+                      <button 
+                        onClick={() => handleApiKeyChange('')}
+                        className="p-1 text-gray-400 hover:text-gray-600"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={testApiKey}
+                    disabled={isTestingKey}
+                    className="flex-1 bg-blue-50 text-blue-600 py-2 rounded-xl text-xs font-bold hover:bg-blue-100 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                  >
+                    {isTestingKey ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                    测试连接
+                  </button>
+                  {window.aistudio && (
+                    <button 
+                      onClick={useOfficialKey}
+                      className="flex-1 bg-gray-50 text-gray-600 py-2 rounded-xl text-xs font-bold hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <Settings className="w-3 h-3" />
+                      官方密钥
                     </button>
                   )}
                 </div>
                 <p className="text-[10px] text-gray-400 leading-relaxed">
                   密钥将保存在您的浏览器本地。我们不会在服务器端存储您的密钥。
+                  {window.aistudio && (
+                    <>
+                      {" 您也可以点击“官方密钥”使用平台提供的安全连接。"}
+                      <a 
+                        href="https://ai.google.dev/gemini-api/docs/billing" 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline block mt-1"
+                      >
+                        关于计费与配额
+                      </a>
+                    </>
+                  )}
                 </p>
               </div>
             </motion.div>
