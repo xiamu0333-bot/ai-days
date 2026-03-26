@@ -15,7 +15,6 @@ import {
   Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI, Type } from "@google/genai";
 
 // --- Types ---
 interface AIStudio {
@@ -83,7 +82,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState(() => {
-    const saved = localStorage.getItem('gemini_api_key');
+    const saved = localStorage.getItem('zhipu_api_key') || localStorage.getItem('gemini_api_key');
     if (saved && saved !== 'undefined' && saved !== 'null') return saved;
     return '';
   });
@@ -168,12 +167,39 @@ export default function App() {
   };
 
   // --- AI Processing ---
+  const callZhipuAI = async (key: string, model: string, systemPrompt: string, userContent: any) => {
+    const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent }
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.7
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error?.message || `HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.choices[0].message.content;
+  };
+
   const processSchedule = async () => {
-    // Use UI key if provided, otherwise fallback to platform provided key (process.env.API_KEY or GEMINI_API_KEY)
-    const effectiveApiKey = apiKey.trim() || (process.env as any).API_KEY || (process.env as any).GEMINI_API_KEY || '';
+    // Use UI key if provided, otherwise fallback to platform provided key
+    const effectiveApiKey = apiKey.trim() || (process.env as any).API_KEY || (process.env as any).ZHIPU_API_KEY || '';
 
     if (!effectiveApiKey) {
-      setError('请先在设置中输入 Gemini API Key 或通过“官方密钥”连接。');
+      setError('请先在设置中输入 智谱 AI API Key。');
       setShowSettings(true);
       return;
     }
@@ -193,9 +219,6 @@ export default function App() {
     const currentDay = days[now.getDay()];
 
     try {
-      const ai = new GoogleGenAI({ apiKey: effectiveApiKey });
-      const model = "gemini-3-flash-preview";
-
       const systemInstruction = `
         你是一个专业的日程规划专家。你的任务是从用户的文本输入或图片（如课表、会议通知、聊天截图）中提取日程信息。
         
@@ -218,52 +241,33 @@ export default function App() {
         9. 如果新提取的日程与已有日程在时间上存在冲突，请在返回的 JSON 中包含该日程，前端会自动处理覆盖逻辑。
       `;
 
-      const contents: any[] = [];
-      
+      let userContent: any;
       if (selectedImage) {
-        const base64Data = selectedImage.split(',')[1];
-        const mimeType = selectedImage.split(',')[0].split(':')[1].split(';')[0];
-        contents.push({
-          parts: [
-            { text: inputText || "请分析这张图片并提取日程。" },
-            { inlineData: { data: base64Data, mimeType } }
-          ]
-        });
+        userContent = [
+          { type: "text", text: inputText || "请分析这张图片并提取日程。" },
+          { 
+            type: "image_url", 
+            image_url: { url: selectedImage } 
+          }
+        ];
       } else {
-        contents.push({
-          parts: [{ text: inputText }]
-        });
+        userContent = inputText;
       }
 
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: {
-          systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              schedules: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    startTime: { type: Type.STRING },
-                    endTime: { type: Type.STRING },
-                    description: { type: Type.STRING }
-                  },
-                  required: ["title", "startTime", "endTime", "description"]
-                }
-              }
-            },
-            required: ["schedules"]
-          }
+      let resultText = '';
+      try {
+        // Primary model: glm-4.6v-flash
+        resultText = await callZhipuAI(effectiveApiKey, "glm-4.6v-flash", systemInstruction, userContent);
+      } catch (primaryErr: any) {
+        console.warn('Primary model failed, trying fallback...', primaryErr);
+        // Fallback if busy or error: GLM-4.1V-Thinking-Flash
+        if (primaryErr.message.includes('busy') || primaryErr.message.includes('limit') || primaryErr.message.includes('503') || primaryErr.message.includes('429')) {
+          resultText = await callZhipuAI(effectiveApiKey, "GLM-4.1V-Thinking-Flash", systemInstruction, userContent);
+        } else {
+          throw primaryErr;
         }
-      });
+      }
 
-      const resultText = response.text;
       if (!resultText) {
         throw new Error("模型未返回任何内容");
       }
@@ -365,30 +369,24 @@ export default function App() {
 
   const handleApiKeyChange = (val: string) => {
     setApiKey(val);
-    localStorage.setItem('gemini_api_key', val);
+    localStorage.setItem('zhipu_api_key', val);
   };
 
   const testApiKey = async () => {
-    const effectiveApiKey = apiKey.trim() || (process.env as any).API_KEY || (process.env as any).GEMINI_API_KEY || '';
+    const effectiveApiKey = apiKey.trim() || (process.env as any).API_KEY || (process.env as any).ZHIPU_API_KEY || '';
     if (!effectiveApiKey) {
-      setError('请先在设置中输入 API Key 或通过“官方密钥”连接。');
+      setError('请先在设置中输入 API Key。');
       return;
     }
     setIsTestingKey(true);
     setError(null);
     try {
-      const ai = new GoogleGenAI({ apiKey: effectiveApiKey });
-      const model = "gemini-3-flash-preview";
-      await ai.models.generateContent({
-        model,
-        contents: "test",
-        config: { maxOutputTokens: 1 }
-      });
+      await callZhipuAI(effectiveApiKey, "glm-4.6v-flash", "You are a helpful assistant.", "test");
       setSuccess('API Key 验证成功！');
     } catch (err: any) {
       console.error(err);
       let msg = err.message || '验证失败';
-      if (msg.includes('API key not valid')) msg = 'API Key 无效';
+      if (msg.includes('401') || msg.includes('invalid')) msg = 'API Key 无效';
       setError('验证失败：' + msg);
     } finally {
       setIsTestingKey(false);
@@ -441,9 +439,9 @@ export default function App() {
             >
               <div className="bg-white p-4 rounded-2xl border border-blue-100 shadow-sm space-y-3 mb-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Gemini API Key</label>
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">智谱 AI API Key</label>
                   <a 
-                    href="https://aistudio.google.com/app/apikey" 
+                    href="https://open.bigmodel.cn/usercenter/apikeys" 
                     target="_blank" 
                     rel="noopener noreferrer"
                     className="text-[10px] text-blue-600 hover:underline"
@@ -456,7 +454,7 @@ export default function App() {
                     type={showApiKey ? "text" : "password"}
                     value={apiKey}
                     onChange={(e) => handleApiKeyChange(e.target.value)}
-                    placeholder="输入您的 Gemini API Key..."
+                    placeholder="输入您的 智谱 AI API Key..."
                     className="w-full bg-gray-50 border-none focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-3 pr-20"
                   />
                   <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
@@ -498,19 +496,14 @@ export default function App() {
                 </div>
                 <p className="text-[10px] text-gray-400 leading-relaxed">
                   密钥将保存在您的浏览器本地。我们不会在服务器端存储您的密钥。
-                  {window.aistudio && (
-                    <>
-                      {" 您也可以点击“官方密钥”使用平台提供的安全连接。"}
-                      <a 
-                        href="https://ai.google.dev/gemini-api/docs/billing" 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline block mt-1"
-                      >
-                        关于计费与配额
-                      </a>
-                    </>
-                  )}
+                  <a 
+                    href="https://open.bigmodel.cn/pricing" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline block mt-1"
+                  >
+                    关于计费与配额
+                  </a>
                 </p>
               </div>
             </motion.div>
