@@ -71,6 +71,8 @@ export default function App() {
   const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
+  const [showSettings, setShowSettings] = useState(false);
 
   const recognitionRef = useRef<any>(null);
 
@@ -150,6 +152,12 @@ export default function App() {
 
   // --- AI Processing ---
   const processSchedule = async () => {
+    if (!apiKey) {
+      setError('请先在上方输入 Gemini API Key。');
+      setShowSettings(true);
+      return;
+    }
+
     if (!inputText && !selectedImage) {
       setError('请输入内容或上传图片。');
       return;
@@ -165,7 +173,7 @@ export default function App() {
     const currentDay = days[now.getDay()];
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
       const model = "gemini-3-flash-preview";
 
       const systemInstruction = `
@@ -314,8 +322,13 @@ export default function App() {
     ));
   };
 
+  const handleApiKeyChange = (val: string) => {
+    setApiKey(val);
+    localStorage.setItem('gemini_api_key', val);
+  };
+
   return (
-    <div className="min-h-screen max-w-md mx-auto flex flex-col font-sans">
+    <div className="min-h-screen max-w-md mx-auto flex flex-col font-sans bg-gray-50">
       {/* Header */}
       <header className="glass sticky top-0 z-30 px-6 py-4 flex justify-between items-center border-b border-gray-200/50">
         <div className="flex items-center gap-2">
@@ -324,10 +337,62 @@ export default function App() {
           </div>
           <h1 className="text-xl font-bold tracking-tight">AI 日程管家</h1>
         </div>
+        <button 
+          onClick={() => setShowSettings(!showSettings)}
+          className={`p-2 rounded-xl transition-colors ${showSettings ? 'bg-blue-50 text-blue-600' : 'text-gray-500 hover:bg-gray-100'}`}
+        >
+          <Settings className="w-5 h-5" />
+        </button>
       </header>
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto px-6 py-4 space-y-6 no-scrollbar" style={{ paddingBottom: '280px' }}>
+        {/* Settings / API Key Input */}
+        <AnimatePresence>
+          {showSettings && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="bg-white p-4 rounded-2xl border border-blue-100 shadow-sm space-y-3 mb-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Gemini API Key</label>
+                  <a 
+                    href="https://aistudio.google.com/app/apikey" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-[10px] text-blue-600 hover:underline"
+                  >
+                    获取密钥
+                  </a>
+                </div>
+                <div className="relative">
+                  <input 
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => handleApiKeyChange(e.target.value)}
+                    placeholder="输入您的 Gemini API Key..."
+                    className="w-full bg-gray-50 border-none focus:ring-2 focus:ring-blue-500 rounded-xl text-sm p-3 pr-10"
+                  />
+                  {apiKey && (
+                    <button 
+                      onClick={() => handleApiKeyChange('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <p className="text-[10px] text-gray-400 leading-relaxed">
+                  密钥将保存在您的浏览器本地。我们不会在服务器端存储您的密钥。
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Error Alert */}
         <AnimatePresence>
           {error && (
